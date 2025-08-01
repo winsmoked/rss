@@ -1,0 +1,12 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<rss xmlns:atom="http://www.w3.org/2005/Atom" xmlns:content="http://purl.org/rss/1.0/modules/content/" version="2.0">
+  <channel>
+    <title>Binance – 新数字货币及交易对上新 (scraped)</title>
+    <link>https://www.binance.com/zh-CN/support/announcement/list/48</link>
+    <description>Automated RSS feed built by GitHub Actions (HTML scraping)</description>
+    <docs>http://www.rssboard.org/rss-specification</docs>
+    <generator>python-feedgen</generator>
+    <language>zh-cn</language>
+    <lastBuildDate>Fri, 01 Aug 2025 06:07:03 +0000</lastBuildDate>
+  </channel>
+</rss>
