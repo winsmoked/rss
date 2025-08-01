@@ -17,7 +17,7 @@ jobs:
 
       - name: Install deps & generate XML
         run: |
-          python -m pip install --quiet feedgen requests
+          python -m pip install --quiet feedgen requests beautifulsoup4
           python binance_rss.py
 
       - name: Commit & push
