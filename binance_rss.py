@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-# binance_rss.py  –  scrape embedded JSON from Binance catalog page
+# binance_rss.py  –  resilient HTML-embedded JSON scraper
 #
-# Generates launchpool.xml in the repo root.  Designed for GitHub Actions
-# but can run anywhere Python ≥3.9 is available.
+# Generates launchpool.xml (RSS 2.0).  Works on GitHub Actions or locally.
 
 import datetime as dt
 import html, json, re, sys
+from collections import deque
 from pathlib import Path
 
 import requests
@@ -13,9 +13,9 @@ from feedgen.feed import FeedGenerator
 from requests.adapters import HTTPAdapter, Retry
 
 # ---------------------------------------------------------------------
-# 1  HTTP setup
+# 1  Config
 # ---------------------------------------------------------------------
-CATALOG_ID = 48  # “新数字货币及交易对上新”
+CATALOG_ID = 48  # 新数字货币及交易对上新
 PAGE_URL   = f"https://www.binance.com/zh-CN/support/announcement/list/{CATALOG_ID}"
 
 HEADERS = {
@@ -32,7 +32,7 @@ session.mount(
 )
 
 # ---------------------------------------------------------------------
-# 2  Fetch HTML and extract the JSON blob
+# 2  Download page and pull embedded JSON
 # ---------------------------------------------------------------------
 try:
     html_resp = session.get(PAGE_URL, headers=HEADERS, timeout=20)
@@ -40,26 +40,40 @@ try:
 except Exception as e:
     sys.exit(f"[error] Failed to download page: {e}")
 
-match = re.search(
-    r'<script[^>]+id="__APP_DATA__"[^>]*>(.*?)</script>', 
-    html_resp.text, re.S
-)
-if not match:
-    sys.exit("[error] Could not locate __APP_DATA__ JSON in page HTML")
+pattern = r'<script[^>]+id="(?:__APP_DATA__|__NEXT_DATA__)"[^>]*>(.*?)</script>'
+m = re.search(pattern, html_resp.text, re.S)
+if not m:
+    sys.exit("[error] Could not locate embedded JSON (<script id='__APP_DATA__' | '__NEXT_DATA__'>)")
 
 try:
-    raw_json = html.unescape(match.group(1))
-    app_data = json.loads(raw_json)
-    # Path observed 2025-08-01; adjust if Binance restructures:
-    articles = app_data["pageData"]["catalogArticles"]["articles"]
+    raw_json = html.unescape(m.group(1))
+    root     = json.loads(raw_json)
 except Exception as e:
-    sys.exit(f"[error] Failed to parse embedded JSON: {e}")
-
-if not articles:
-    sys.exit("[error] No articles found in embedded JSON")
+    sys.exit(f"[error] Embedded JSON unparseable: {e}")
 
 # ---------------------------------------------------------------------
-# 3  Build RSS feed
+# 3  Locate the article list generically
+# ---------------------------------------------------------------------
+def find_article_list(node):
+    """Breadth-first search for a list of dicts with title+code keys."""
+    queue = deque([node])
+    while queue:
+        cur = queue.popleft()
+        if isinstance(cur, list) and cur and isinstance(cur[0], dict):
+            if "title" in cur[0] and "code" in cur[0]:
+                return cur
+        if isinstance(cur, dict):
+            queue.extend(cur.values())
+        elif isinstance(cur, list):
+            queue.extend(cur)
+    return None
+
+articles = find_article_list(root)
+if not articles:
+    sys.exit("[error] Embedded JSON does not contain an article list")
+
+# ---------------------------------------------------------------------
+# 4  Build RSS
 # ---------------------------------------------------------------------
 fg = FeedGenerator()
 fg.title("Binance – 新数字货币及交易对上新 (scraped)")
@@ -67,20 +81,16 @@ fg.link(href=PAGE_URL)
 fg.description("Automated RSS feed built by GitHub Actions (HTML-embedded JSON)")
 fg.language("zh-cn")
 
-for art in articles:
-    # Fallback logic for date field differences:
-    ts_ms = art.get("releaseDate") or art.get("releaseDateTimestamp")
-    pub_date = dt.datetime.utcfromtimestamp(ts_ms / 1000) if ts_ms else dt.datetime.utcnow()
+for art in articles[:20]:                       # keep latest 20
+    ts_ms = art.get("releaseDate") or art.get("timeRelease")  # fallback key names
+    pub_dt = dt.datetime.utcfromtimestamp(ts_ms / 1000) if ts_ms else dt.datetime.utcnow()
 
     fe = fg.add_entry()
     fe.title(art["title"])
     fe.link(href=f'https://www.binance.com/zh-CN/support/announcement/{art["code"]}')
     fe.guid(art["code"])
-    fe.pubDate(pub_date)
+    fe.pubDate(pub_dt)
 
-# ---------------------------------------------------------------------
-# 4  Write launchpool.xml
-# ---------------------------------------------------------------------
 out = Path("launchpool.xml")
 fg.rss_file(out, pretty=True)
 print(f"[ok] Wrote {out.resolve()}")
