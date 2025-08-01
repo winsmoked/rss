@@ -15,7 +15,8 @@ HEAD = {
 }
 
 def fetch_articles():
-    r = requests.post(API, json=BODY, headers=HEAD, timeout=15)
+    params = {"type": 1, "catalogId": 48, "pageNo": 1, "pageSize": 20}
+    r = requests.get(API, params=params, headers=HEAD, timeout=15)
     r.raise_for_status()
     return r.json()["data"]["articles"]
 
