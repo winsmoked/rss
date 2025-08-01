@@ -1,81 +1,86 @@
 #!/usr/bin/env python3
-# binance_rss.py  –  HTML-scraping version (no API key needed)
+# binance_rss.py  –  scrape embedded JSON from Binance catalog page
+#
+# Generates launchpool.xml in the repo root.  Designed for GitHub Actions
+# but can run anywhere Python ≥3.9 is available.
 
-import datetime
-import re
+import datetime as dt
+import html, json, re, sys
+from pathlib import Path
+
 import requests
-from bs4 import BeautifulSoup
 from feedgen.feed import FeedGenerator
 from requests.adapters import HTTPAdapter, Retry
 
-# -------- 1  Target page --------
-PAGE = "https://www.binance.com/zh-CN/support/announcement/list/48"
+# ---------------------------------------------------------------------
+# 1  HTTP setup
+# ---------------------------------------------------------------------
+CATALOG_ID = 48  # “新数字货币及交易对上新”
+PAGE_URL   = f"https://www.binance.com/zh-CN/support/announcement/list/{CATALOG_ID}"
 
 HEADERS = {
-    "User-Agent": "Mozilla/5.0",
+    "User-Agent":  "Mozilla/5.0 (X11; Linux x86_64)",
     "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
     "Referer": "https://www.binance.com/zh-CN/support/announcement",
 }
 
-SESSION = requests.Session()
-SESSION.mount(
+session = requests.Session()
+session.mount(
     "https://",
-    HTTPAdapter(
-        max_retries=Retry(total=4, backoff_factor=1, status_forcelist=[502, 503, 504])
-    ),
+    HTTPAdapter(max_retries=Retry(total=4, backoff_factor=1,
+                                  status_forcelist=[502, 503, 504]))
 )
 
-# -------- 2  Scrape page --------
-resp = SESSION.get(PAGE, headers=HEADERS, timeout=20)
-resp.raise_for_status()
+# ---------------------------------------------------------------------
+# 2  Fetch HTML and extract the JSON blob
+# ---------------------------------------------------------------------
+try:
+    html_resp = session.get(PAGE_URL, headers=HEADERS, timeout=20)
+    html_resp.raise_for_status()
+except Exception as e:
+    sys.exit(f"[error] Failed to download page: {e}")
 
-soup = BeautifulSoup(resp.text, "html.parser")
+match = re.search(
+    r'<script[^>]+id="__APP_DATA__"[^>]*>(.*?)</script>', 
+    html_resp.text, re.S
+)
+if not match:
+    sys.exit("[error] Could not locate __APP_DATA__ JSON in page HTML")
 
-# Every announcement card lives inside an <a> that starts with /zh-CN/support/announcement/
-cards = soup.select('a[href^="/zh-CN/support/announcement/"]')
+try:
+    raw_json = html.unescape(match.group(1))
+    app_data = json.loads(raw_json)
+    # Path observed 2025-08-01; adjust if Binance restructures:
+    articles = app_data["pageData"]["catalogArticles"]["articles"]
+except Exception as e:
+    sys.exit(f"[error] Failed to parse embedded JSON: {e}")
 
-articles = []
-for a in cards:
-    href = a["href"].split("?")[0]  # strip tracking params
-    title = a.get_text(" ", strip=True)
-    # Try to find a YYYY-MM-DD inside the anchor (date div is nested)
-    m = re.search(r"\d{4}-\d{2}-\d{2}", a.text)
-    date_str = m.group(0) if m else None
-    pubdate = (
-        datetime.datetime.strptime(date_str, "%Y-%m-%d")
-        if date_str
-        else datetime.datetime.utcnow()
-    )
-    articles.append(
-        {
-            "title": title,
-            "link": f"https://www.binance.com{href}",
-            "pubDate": pubdate,
-            "guid": href.rsplit("/", 1)[-1],
-        }
-    )
+if not articles:
+    sys.exit("[error] No articles found in embedded JSON")
 
-# De-duplicate & keep newest 20
-seen = set()
-unique = []
-for art in articles:
-    if art["guid"] not in seen:
-        unique.append(art)
-        seen.add(art["guid"])
-unique = unique[:20]
-
-# -------- 3  Build RSS --------
+# ---------------------------------------------------------------------
+# 3  Build RSS feed
+# ---------------------------------------------------------------------
 fg = FeedGenerator()
 fg.title("Binance – 新数字货币及交易对上新 (scraped)")
-fg.link(href=PAGE)
-fg.description("Automated RSS feed built by GitHub Actions (HTML scraping)")
+fg.link(href=PAGE_URL)
+fg.description("Automated RSS feed built by GitHub Actions (HTML-embedded JSON)")
 fg.language("zh-cn")
 
-for art in unique:
+for art in articles:
+    # Fallback logic for date field differences:
+    ts_ms = art.get("releaseDate") or art.get("releaseDateTimestamp")
+    pub_date = dt.datetime.utcfromtimestamp(ts_ms / 1000) if ts_ms else dt.datetime.utcnow()
+
     fe = fg.add_entry()
     fe.title(art["title"])
-    fe.link(href=art["link"])
-    fe.guid(art["guid"])
-    fe.pubDate(art["pubDate"])
+    fe.link(href=f'https://www.binance.com/zh-CN/support/announcement/{art["code"]}')
+    fe.guid(art["code"])
+    fe.pubDate(pub_date)
 
-fg.rss_file("launchpool.xml", pretty=True)
+# ---------------------------------------------------------------------
+# 4  Write launchpool.xml
+# ---------------------------------------------------------------------
+out = Path("launchpool.xml")
+fg.rss_file(out, pretty=True)
+print(f"[ok] Wrote {out.resolve()}")
